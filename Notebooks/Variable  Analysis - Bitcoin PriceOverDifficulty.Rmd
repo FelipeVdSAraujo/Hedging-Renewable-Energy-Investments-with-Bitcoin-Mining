@@ -1,0 +1,126 @@
+---
+title: "Monte Carlo Simulation"
+output: html_notebook
+---
+
+##  Hedging Renewable Energy Investments with Bitcoin Mining
+
+Authors: Bastian-Pinto, C., Araujo, F. VdS., Brandão, L. E. T., Gomes, L. L.
+
+Abstract Renewable energy sources such as wind power are increasing their share of the world energy matrix. Nonetheless, wind farms projects are subject to variations in output due to climate conditions and to price volatility if they choose to anticipate construction to sell their energy in the short term markets. In order to create incentives for early investment, we show that wind farm investors can hedge electricity price risk by simultaneously investing in a cryptocurrency mining facility that uses electricity as input to produce newly minted Bitcoins to sell in the market. Given that electricity and Bitcoin prices are mostly uncorrelated, the ability to switch outputs between these two assets depending on their relative prices, allows the firm to maximize revenues and minimize losses. We develop a numerical application where we apply the real options approach to model a wind farm that chooses to anticipate construction in order to sell energy in the short term market for up to four years prior to entering into its long term energy sales commitment. Given that this power plant also invests in a Bitcoin mining facility, whenever the price of the Bitcoins created is higher than the market price of electric power, the firm will choose to operate the mining facility. Otherwise, it will sell its energy to the market. The short-term energy price and Bitcoin price/mining-difficulty ratio are modeled as two distinct stochastic diffusion processes. The results show that the option to switch outputs significantly increases the generator’s revenue while simultaneously decreasing the risk.
+
+Keywords: real options, switch option, renewable energy production, cryptocurrency mining, bit-spread
+
+This page presents the analysis of the Bitcoin Price/Difficulty construct used in the paper. All the code was run in RStudio using the version of the software below.
+
+### Software version
+
+```{r}
+R.version
+```
+
+### Setting of the environment
+
+```{r}
+# Global Chart Configurations
+# Used to resize plots
+require(repr) 
+options(repr.plot.width=8, repr.plot.height=3) 
+# Used to print tables inside the R Notebook
+require(knitr)
+```
+
+
+### Loading Data
+
+Read data from 'Data' folder in project structure. Data comes without headers so col.names are added. Column classes are defined since data format is previously known.
+
+#### Price Data
+```{r}
+original.data = read.csv(file='../Data/market-price.csv', col.names=c('Date', 'Price'), colClasses=c('character', 'double'))
+
+# Backup for verification purposes
+price.data = original.data 
+
+# Adjust dates
+price.data$Date = as.Date(price.data$Date, format="%m/%d/%Y")
+
+# Show the first six lines of data
+kable(head(price.data), caption="First lines of imported Price data:")
+```
+
+
+#### Difficulty Data
+```{r}
+difficulty.data = read.csv(file='../Data/difficulty.csv', col.names=c('Date', 'Difficulty'), colClasses=c('Date', 'double'))
+
+# Show the first six lines of data
+kable(head(difficulty.data), caption="First lines of imported Difficulty data:")
+```
+
+
+### Calculating the returns
+
+```{r}
+# Obtain log of prices
+price.data$LogPrice <- log(price.data$Price)
+
+# Calculate returns
+# Use NA in the first position of the vector since diff return has one less observation
+price.data$Returns <- c(NA, diff(price.data$LogPrice)) 
+```
+
+
+### Selecting a subset of the data 
+
+```{r}
+selected.price.data <- price.data[which(price.data$Date=="2015-02-01"):nrow(price.data), ]
+
+selected.difficulty.data <- difficulty.data[which(difficulty.data$Date=="2015-02-01"):nrow(difficulty.data), ]
+
+selected.data <- merge(selected.price.data, selected.difficulty.data, by="Date")
+
+# Display the number of rows (data points)
+paste("There are", nrow(selected.price.data), "Price data points and", nrow(selected.difficulty.data), "Difficulty data points. The merged database have the following number of data points:", nrow(selected.data))
+```
+
+### Calculate Price/Difficulty Series
+
+```{r}
+selected.data$Price_Difficulty <- selected.data$Price * 10^8 / selected.data$Difficulty
+
+# Display the six first and last rows of the data set
+kable(head(selected.data), caption="Display the six first rows of the data set")
+kable(tail(selected.data), caption="Display the six last rows of the data set")
+```
+
+### Plot Series
+
+```{r}
+plot(Price_Difficulty ~ Date, selected.data, xaxt = "n", type = "l"); axis(1, selected.data$Date, format(selected.data$Date, "%b %Y"), cex.axis = .7)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
