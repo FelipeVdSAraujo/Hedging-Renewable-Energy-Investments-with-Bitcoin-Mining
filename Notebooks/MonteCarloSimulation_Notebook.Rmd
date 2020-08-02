@@ -1,0 +1,531 @@
+---
+title: "Monte Carlo Simulation"
+output: html_notebook
+---
+
+##  Hedging Renewable Energy Investments with Bitcoin Mining
+
+Authors: Bastian-Pinto, C. Araujo, F. VdS. Brandão, L. E. T. Gomes, L. L.
+
+Abstract Renewable energy sources such as wind power are increasing their share of the world energy matrix. Nonetheless, wind farms projects are subject to variations in output due to climate conditions and to price volatility if they choose to anticipate construction to sell their energy in the short term markets. In order to create incentives for early investment, we show that wind farm investors can hedge electricity price risk by simultaneously investing in a cryptocurrency mining facility that uses electricity as input to produce newly minted Bitcoins to sell in the market. Given that electricity and Bitcoin prices are mostly uncorrelated, the ability to switch outputs between these two assets depending on their relative prices, allows the firm to maximize revenues and minimize losses. We develop a numerical application where we apply the real options approach to model a wind farm that chooses to anticipate construction in order to sell energy in the short term market for up to four years prior to entering into its long term energy sales commitment. Given that this power plant also invests in a Bitcoin mining facility, whenever the price of the Bitcoins created is higher than the market price of electric power, the firm will choose to operate the mining facility. Otherwise, it will sell its energy to the market. The short-term energy price and Bitcoin price/mining-difficulty ratio are modeled as two distinct stochastic diffusion processes. The results show that the option to switch outputs significantly increases the generator’s revenue while simultaneously decreasing the risk.
+
+Keywords: real options, switch option, renewable energy production, cryptocurrency mining, bit-spread
+
+This work presents the calculations done for the article referenced above. The following calculations use parameters for the diffusion of stochastic variables that have been defined in the paper. All the code was run in RStudio using the version of the software below.
+
+### Software version
+
+```{r}
+R.version
+```
+
+### Setting of the environment
+
+```{r}
+# Sets the number of series used in the MonteCarlo Simulation
+NSeries <- 50000 
+
+# Used to set BTC production cap and calculate investment
+numberBTCMiners <- 1750 
+
+# Global Chart Configurations
+# Used to resize plots
+require(repr) 
+options(repr.plot.width=8, repr.plot.height=3) 
+# Used for triangular distribution
+require(extraDistr)
+# Used to print tables inside the R Notebook
+require(knitr)
+```
+
+
+### Local functions definition
+
+The first set of local functions are used to create the diffusion of the stochastic variables and their deterministic counterparts.
+
+```{r}
+## Diffusion Functions ##
+
+PLD_Diffusion <- function(start, len, n, RevertingMean, Volatility, Eta, Max) {
+    # Diffusion1 <- RevertingMean*exp(-Volatility^2/(4*Eta))
+    Diffusion2 <- exp(-Eta)
+    Diffusion3 <- (log(RevertingMean)-Volatility^2/(2*Eta))*(1-Diffusion2)
+    Diffusion4 <- Volatility*sqrt((1-Diffusion2^2)/(2*Eta))
+    
+    x = matrix(NA, nrow=(len+1), ncol=n)
+    x[1, ] = start
+    
+    for(i in 2:(len+1)){
+        x[i, ] = exp(log(x[i-1, ])*Diffusion2+Diffusion3+Diffusion4*rnorm(n,0,1))
+        x[i, x[i, ] > Max] = Max
+    }
+    return(x)
+}
+
+PLD_Deterministic <- function(start, len, RevertingMean, Volatility, Eta, Max) {
+    Diffusion1 <- log(RevertingMean)-Volatility^2/(2*Eta)
+    Diffusion2 <- Volatility^2/(4*Eta)
+    
+    x = rep(NA, len)
+    
+    for(i in 1:len){
+        x[i] = min(Max, exp(log(start)*exp(-Eta*i)+Diffusion1*(1-exp(-Eta*i))+Diffusion2*(1-exp(-2*Eta*i))))
+    }
+    return(c(start, x))
+}
+
+BTC_Diffusion <- function(start, len, n, mu, sigma) {
+    x = matrix(NA, nrow=(len+1), ncol=n)
+    x[1, ] = start
+    
+    for(i in 2:(len+1)){
+        x[i, ] = x[i-1, ]*exp(rnorm(n, mu-sigma^2/2, sigma))
+    }
+    return(x)
+}
+
+BTC_Deterministic <- function(start, len, mu, sigma) {
+    x = rep(NA, (len+1))
+    
+    if (length(start) > 1) start <- mean(start)
+    x[1] = start
+    
+    for(i in 2:(len+1)){
+        x[i] = x[i-1]*exp(mu)
+    }
+    return(x)
+}
+
+```
+
+Then we will define functions to obtain the cash flow, NPV and an auxiliary function to select the grater results between two return series at each point.
+
+```{r}
+## Project Cash Flow Functions ##
+
+P_and_L <- function(revenue, variableCosts, fixedCost, taxesPerc, depreciation, taxOnRevenue) {
+    if (taxOnRevenue) {
+        PandL <- revenue*(1-taxesPerc)-variableCosts-fixedCost
+    } else {
+        PandL <- (revenue-variableCosts-fixedCost-depreciation)*(1-taxesPerc)+depreciation
+    }
+    return(PandL)
+}
+
+npv <- function(cf, r) {
+    len <- length(cf)
+    r.vec <- rep(NA, len)
+    for (i in 1:len){
+        r.vec[i] <- (1+r)^(i-1)
+    }
+    return(sum(cf / r.vec))
+}
+
+select_greater <- function(input1, input2) {
+    # The best results from each scenario are chosen a posteriori 
+    # This is a simplified version of the agents having an instant and more granular choice
+    
+    results <- input1
+    index.vec <- which(input2 > input1)
+    results[index.vec] <- input2[index.vec]
+    return(results)
+}
+```
+
+The next function is simply a mask to printing numbers onscreen with no decimal places and a thousands separator.
+
+```{r}
+## Display results with comma separator and with an specific number of decimals
+
+format_text <- function(text, decPlaces) { 
+    format(round(as.numeric(text), decPlaces), nsmall=decPlaces, big.mark=",") 
+}
+```
+
+And finally we create a function to format a table of results, and a function to plot a histogram with many adjustable parameters.
+
+```{r}
+## Auxiliary Functions ##
+
+create_results_table <- function(NPV, rowname, BaseNPV = NULL) {
+    
+    meanNPV = mean(NPV)
+    
+    nNegNPV = sum(NPV < 0)
+    nElements = length(NPV)
+    PercNeg = nNegNPV/nElements
+    
+    if (!is.null(BaseNPV)) {
+        compareMeans = meanNPV/mean(BaseNPV) - 1
+        comparePerc = PercNeg - sum(BaseNPV < 0)/nElements
+        compare.vec = format_text(c(compareMeans, comparePerc), 2) 
+    } else {
+        compare.vec = rep("-", 2)
+    }
+    
+    x.vec = c(format_text(meanNPV, 0), format_text(PercNeg, 2))
+    x.vec = c(x.vec, compare.vec)
+        
+    x.matrix <- matrix(x.vec, nrow=1)
+    colnames(x.matrix) <- c("Mean of NPV", "Perc. Neg.", "NPV/Base", "Perc. - Base")
+    rownames(x.matrix) <- rowname
+    
+    return(x.matrix)
+}
+
+create_results_hist <- function(NPV, breaksLen, plotXLim, textXAdj, textYAdj, subTextAdj, lineAdj, plotWidth, plotHeight) {
+    options(repr.plot.width=plotWidth, repr.plot.height=plotHeight)
+    
+    NPV = NPV/1000000
+    meanNPV = mean(NPV)
+    minNPV = min(NPV)
+    maxNPV = max(NPV)
+    percNeg <- round(as.numeric(sum(NPV < 0)/length(NPV)*100), 0)
+    
+    breaks.vec <- seq(minNPV, maxNPV+breaksLen, by=breaksLen)
+    
+    quant95 <- quantile(NPV, 0.95)
+    text.pos.x <- c(-textXAdj, quant95/2, quant95 + textXAdj)
+    
+    text.labels <- c(paste(percNeg, "%", sep=""), paste(95 - percNeg, "%", sep=""), "5%")
+    text.labels <- paste("<", text.labels, ">")
+    text.colors <- c("black", "red", "black")
+    
+    hist.obj <- hist(NPV, breaks=breaks.vec, border="darkred", col="red", xlab="NPV in Millions", main="", xlim=plotXLim, freq=FALSE)
+    abline(v=c(0, quant95), lty=2)
+
+    textYPos <- max(hist.obj$density) + textYAdj
+    text(meanNPV, subTextAdj, labels=paste("| Mean:", round(meanNPV, 2)), adj=0, cex=0.8)
+    text(quant95, subTextAdj, labels=paste(" Q95:", round(quant95, 2)), adj=0, cex=0.8)
+
+    text(text.pos.x, textYPos, labels=text.labels, col=text.colors, cex=0.8)
+    text(-textXAdj, textYPos - lineAdj, labels="Min:", cex=0.8)
+    text(quant95+textXAdj, textYPos - lineAdj, labels="Max:", cex=0.8)
+    text(-textXAdj, textYPos - 2 * lineAdj, labels=round(minNPV, 2), cex=0.8)
+    text(quant95+textXAdj, textYPos - 2 * lineAdj, labels=round(maxNPV, 2), cex=0.8)
+    
+    return(hist.obj)
+}
+```
+
+### Local variables definition
+
+#### Set data for Wind Power generation
+```{r}
+# Based on (Lira and Moita Neto, 2017)
+wind.velocity = c(2.3,2.6,2.4,2.1,2.1,2.95,3.5,3.6,3.8,3.1,3,2.5) 
+
+# Given by the technology used
+windToPower <- 1871.208247 
+
+power.production <- wind.velocity * windToPower
+
+## Chart ##
+barplot(power.production, col="blue", xlab="Average Monthly Output", ylab="MWh", names.arg=month.abb, ylim=c(0,8000))
+```
+
+#### Constants for PLD Stochastic variable estimation
+
+```{r}
+## PLD Data ##
+
+# As defined by ONS + expected future increase adjustment
+PLDMax <- 150 
+
+# Defined in paper
+PLDStart <- 75 
+PLDEta <- 0.08038 
+PLDRevertingMean <- 86.30
+PLDVolatility <- 0.557
+```
+
+#### Constants for BTC Stochastic variable estimation, along with production costs and power consumption
+
+```{r}
+## BTC Data ##
+
+# Defined in paper
+BTCMu <- -0.0366 
+BTCSigma <- 0.2228
+
+## BTC Mining Data ## 
+
+# Antminer S17 Pro 
+# Used to calculate consumption costs
+BTCMinerHash <- 56*10^12 # Hashes per second
+BTCMinerPower <- 2212 # Watts 
+# Used to calculate investment
+BTCMinerCost <- 1900 # USD
+
+## BTC Stochastic Process
+# Parameters of triangular distribution
+BTCTriangle <- c(5000, 7000, 9000) 
+
+# Used for Triangular start
+# as of 2019-11-19
+BTCInitialDifficulty <- 12720005267390.5 
+```
+
+#### Variables for cash flow and NPV
+
+```{r}
+## Project Cash Flow Data ##
+
+# BRL / USD exchange rate
+BRLUSDEx <- 4 # R$/US$
+
+# Constants for Wind Farm - based on (Fontanet, 2012)
+InitialInvestment <- 9379943/BRLUSDEx 
+FixedCosts <- 52757/BRLUSDEx 
+
+# Defined in paper
+VariableCosts <- 0.14 # % 
+WACC <- 0.08 # Annual
+RF <- 0.05 # Annual
+
+# Refrigeration costs for BTC Mining in percentage of variable costs
+Refrig <- 0.85 
+
+# Simplified tax regime 
+Taxes <- 0.25*0.08+0.09*0.12 
+```
+
+
+### Stochastic processes
+
+#### PLD Diffusion
+
+```{r}
+## PLD Series ##
+
+# Matrix of all series
+PLD.matrix <- PLD_Diffusion(PLDStart, 72, NSeries, PLDRevertingMean, PLDVolatility, PLDEta, PLDMax)
+
+# Means for each period from all simulations
+PLD.period.means <- apply(PLD.matrix, 1, mean) 
+
+# Vector of deterministic series
+PLD.deterministic.series <- PLD_Deterministic(PLDStart, 72, PLDRevertingMean, PLDVolatility, PLDEta, PLDMax)
+
+## Chart ##
+matplot(1:73, cbind(PLD.matrix[, 1000], PLD.period.means, PLD.deterministic.series), type='l', xlab='Periods', ylab='series')
+legend("top", inset=.02, legend=c("Random Series","MonteCarlo Mean","Deterministic Series"),col=c("black", "red", "green"), lty=1:3, cex=0.6, horiz=TRUE, bty="n")
+```
+
+#### BTC Diffusion 
+
+```{r}
+## BTC Starting point ##
+
+# BTC Consumption - used for Deterministic and Triangular Start Types
+BTCConsumptionFactor <- (2^32*BTCMinerPower)/(BTCMinerHash*3600*12.5*1000) # kWh/BTC
+
+# Triangular distribution for BTC Start
+BTCStart <- rtriang(NSeries, BTCTriangle[1], BTCTriangle[3], BTCTriangle[2]) / (BTCConsumptionFactor * BTCInitialDifficulty)
+
+# If Triangular Type then plot distribution
+hist(BTCStart, border="darkred", col="red", xlab="BTC Price/Difficulty Starting Point", main="", freq=FALSE)
+```
+
+```{r}
+## BTC Series and Charts ##
+
+# Vector of BTC deterministic series for the first mining interval
+BTC.1.deterministic.series <- c(rep(0, 22), BTC_Deterministic(BTCStart, 26, BTCMu, BTCSigma), rep(0, 24))
+
+# Vector of BTC deterministic series for the final mining interval
+BTC.2.deterministic.series <- c(rep(0, 22), BTC_Deterministic(BTCStart, 26, BTCMu, BTCSigma), BTC_Deterministic(BTCStart, 26, BTCMu, BTCSigma)[-(1:3)])
+
+# Plot both deterministic series
+plot(BTC.1.deterministic.series, type="l", xlab="Period", ylab="Price/Difficulty")
+plot(BTC.2.deterministic.series, type="l", xlab="Period", ylab="Price/Difficulty")
+
+# Create a matrix for stochastic series for the first mining interval
+BTC.1.matrix <- BTC_Diffusion(BTCStart, 26, NSeries, BTCMu, BTCSigma)
+BTC.1.matrix <- rbind(matrix(0, nrow=22, ncol=NSeries), BTC.1.matrix, matrix(0, nrow=24, ncol=NSeries))
+
+# Obtain the average for each period
+BTC.1.period.means <- apply(BTC.1.matrix, 1, mean)
+
+# Plot one series of the stochastic matrix along the deterministic series and the vector of averages
+matplot(1:73, cbind(BTC.1.matrix[, 2], BTC.1.period.means, BTC.1.deterministic.series), type='l', xlab='Periods', ylab='series')
+legend("top", inset=.02, legend=c("Random Series","MonteCarlo Mean","Deterministic Series"),col=c("black", "red", "green"), lty=1:3, cex=0.6, horiz=TRUE, bty="n")
+
+# Create a matrix for stochastic series for the first mining interval
+BTC.2.matrix <- BTC_Diffusion(BTCStart, 26, NSeries, BTCMu, BTCSigma)
+BTC.2.matrix <- BTC.2.matrix[-c(1:3), ]
+BTC.2.matrix <- rbind(BTC.1.matrix[1:49, ], BTC.2.matrix)
+
+# Obtain the average for each period
+BTC.2.period.means <- apply(BTC.2.matrix, 1, mean) 
+
+# Plot one series of the stochastic matrix along the deterministic series and the vector of averages
+matplot(1:73, cbind(BTC.2.matrix[, 2], BTC.2.period.means, BTC.2.deterministic.series), type='l', xlab='Periods', ylab='series')
+legend("top", inset=.02, legend=c("Random Series","MonteCarlo Mean","Deterministic Series"),col=c("black", "red", "green"), lty=1:3, cex=0.6, horiz=TRUE, bty="n")
+```
+
+
+
+### Revenue and Cash Flow
+
+#### Auxiliary variables and calculations
+
+```{r}
+# Create a long vector of power production
+production.series <- c(NA, rep(power.production, 6))
+
+# Monetary results of producing energy and selling in PLD
+PLD.output <- PLD.matrix[26:73, ] * production.series[26:73]
+
+# Set BTC production cap
+BTCMax <- (numberBTCMiners*BTCMinerPower/1000)/Refrig 
+
+# Auxiliary variables for cap on BTC production
+capped.production.series <- production.series
+capped.production.series[production.series > BTCMax] <- BTCMax
+
+# Monetary results of producing energy, generating BTC and selling in spot prices for the first interval
+BTC.1.output <- BTC.1.matrix[26:49, ] * capped.production.series[26:49] * Refrig * 1000
+BTC.1.output <- rbind(BTC.1.output, PLD.output[25:48, ])
+
+# Monetary results of producing energy, generating BTC and selling in spot prices for the final interval
+BTC.2.output <- BTC.2.matrix[26:73, ] * capped.production.series[26:73] * Refrig * 1000
+
+# Electricity that has not been used for BTC mining due to production cap can be sold at PLD
+extra.production.series <- production.series - capped.production.series
+extra.output.2 <- PLD.matrix[26:73, ] * extra.production.series[26:73]
+extra.output.1 <- rbind(extra.output.2[1:24, ], matrix(0, nrow=24, ncol=NSeries))
+BTC.1.output <- BTC.1.output + extra.output.1
+BTC.2.output <- BTC.2.output + extra.output.2
+```
+
+
+#### Project Cash Flow - without investment costs
+
+```{r}
+## Cash Flow Results ##
+
+PLD.cashflow <- P_and_L(PLD.output, PLD.output*VariableCosts, FixedCosts, Taxes, 0 , TRUE)
+PLD.cashflow <- rbind(matrix(0, nrow=25, ncol=ncol(PLD.cashflow)), PLD.cashflow)
+
+BTC.1.cashflow <- P_and_L(BTC.1.output, PLD.output*VariableCosts, FixedCosts, Taxes, 0, TRUE)
+BTC.1.cashflow <- rbind(matrix(0, nrow=25, ncol=ncol(BTC.1.cashflow)), BTC.1.cashflow)
+BTC.1.cashflow <- select_greater(PLD.cashflow, BTC.1.cashflow)
+
+BTC.2.cashflow <- P_and_L(BTC.2.output, PLD.output*VariableCosts, FixedCosts, Taxes, 0, TRUE)
+BTC.2.cashflow <- rbind(matrix(0, nrow=25, ncol=ncol(BTC.2.cashflow)), BTC.2.cashflow)
+BTC.2.cashflow <- select_greater(PLD.cashflow, BTC.2.cashflow)
+
+PLD.mean.cashflow <- apply(PLD.cashflow, 1, mean)
+BTC.1.mean.cashflow <- apply(BTC.1.cashflow, 1, mean)
+BTC.2.mean.cashflow <- apply(BTC.2.cashflow, 1, mean)
+```
+
+#### Cashflow charts
+
+```{r}
+# Select one specific series to be plotted
+i = 4
+
+matplot(1:73, cbind(PLD.cashflow[, i], BTC.1.cashflow[, i], BTC.2.cashflow[, i]), type='l', xlab='Periods', ylab='series')
+legend("topleft", inset=.1, legend=c("PLD","BTC2","BTC2+2"),col=c("black", "red", "green"), lty=1:3, cex=0.6, horiz=TRUE, bty="n", title=paste("MonteCarlo Series",i))
+```
+
+```{r}
+# Plot averages
+matplot(1:73, cbind(PLD.mean.cashflow, BTC.1.mean.cashflow, BTC.2.mean.cashflow), type='l', xlab='Periods', ylab='series')
+legend("topleft", inset=.08, legend=c("PLD","BTC2","BTC2+2"),col=c("black", "red", "green"), lty=1:3, cex=0.6, horiz=TRUE, bty="n", title="MonteCarlo Averages")
+```
+
+
+### Project NPV
+
+```{r}
+## Project NPV for each scenario ##
+
+# Calculate monthly rate
+RFMonthly <- (1+RF)^(0.0833333333333333)-1
+WACCMonthly <- (1+WACC)^(0.0833333333333333)-1
+
+# Investment for BTC mining in both first and final interval
+BTCInvestment.1 <- numberBTCMiners*BTCMinerCost*((1+RFMonthly)/(1+WACCMonthly))^22
+BTCInvestment.2 <- numberBTCMiners*BTCMinerCost*((1+RFMonthly)/(1+WACCMonthly))^46
+
+# Duplicate data set to allow for stage debugging - may cost memory
+NPV.PLD.cashflow <- PLD.cashflow
+# Insert investment in cash flow
+NPV.PLD.cashflow[1, ] <- NPV.PLD.cashflow[1, ]-InitialInvestment
+# Obtain NPV
+NPV.PLD <- apply(NPV.PLD.cashflow, 2, npv, r=RFMonthly)
+
+# Duplicate data set to allow for stage debugging - may cost memory
+NPV.BTC.1.cashflow <- BTC.1.cashflow
+# Insert investments in cash flow
+NPV.BTC.1.cashflow[1, ] <- NPV.BTC.1.cashflow[1, ]-InitialInvestment
+NPV.BTC.1.cashflow[23, ] <- NPV.BTC.1.cashflow[23, ]-BTCInvestment.1
+# Obtain NPV
+NPV.BTC.1 <- apply(NPV.BTC.1.cashflow, 2, npv, r=RFMonthly)
+
+# Duplicate data set to allow for stage debugging - may cost memory
+NPV.BTC.2.cashflow <- BTC.2.cashflow
+# Insert investments in cash flow
+NPV.BTC.2.cashflow[1, ] <- NPV.BTC.2.cashflow[1, ]-InitialInvestment
+NPV.BTC.2.cashflow[23, ] <- NPV.BTC.2.cashflow[23, ]-BTCInvestment.1
+NPV.BTC.2.cashflow[47, ] <- NPV.BTC.2.cashflow[47, ]-BTCInvestment.2
+# Obtain NPV
+NPV.BTC.2 <- apply(NPV.BTC.2.cashflow, 2, npv, r=RFMonthly)
+
+```
+
+
+### Displaying Results
+
+#### Base Scenario Results
+
+```{r}
+results.matrix.PLD = create_results_table(NPV.PLD, "Base")
+kable(results.matrix.PLD)
+```
+
+```{r}
+
+## Chart ##
+PLD.hist <- create_results_hist(NPV.PLD, 0.625, c(-10,30), 3.5, 0.002, -0.0036, 0.008, 8, 6)
+
+```
+
+#### First Scenario Results
+
+```{r}
+results.matrix.BTC.1 = create_results_table(NPV.BTC.1, "2 Years", NPV.PLD)
+kable(results.matrix.BTC.1)
+```
+
+```{r}
+## Chart ##
+BTC.1.hist <- create_results_hist(NPV.BTC.1, 0.625, c(-10,30), 3.5, 0.002, -0.0022, 0.004, 8, 6)
+
+```
+
+#### Second Scenario Results
+
+```{r}
+results.matrix.BTC.2 = create_results_table(NPV.BTC.2, "2+2 Years", NPV.PLD)
+kable(results.matrix.BTC.2)
+```
+
+```{r}
+
+## Chart ##
+BTC.2.hist <- create_results_hist(NPV.BTC.2, 0.625, c(-10,30), 3.5, 0.002, -0.0017, 0.004, 8, 6)
+
+```
+
+
+### Aggregated Results
+
+```{r}
+kable(rbind(results.matrix.PLD, results.matrix.BTC.1, results.matrix.BTC.2), caption="Table of Results")
+```
+
+
