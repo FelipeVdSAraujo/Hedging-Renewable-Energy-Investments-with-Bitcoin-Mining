@@ -8,3 +8,5 @@ Abstract: Renewable energy sources such as wind power are increasing their share
 Keywords: real options, switch option, renewable energy production, cryptocurrency mining, bit-spread
 
 Navigate code with HTML guide files: https://felipevdsaraujo.github.io/Hedging-Renewable-Energy-Investments-with-Bitcoin-Mining/
+
+Temporary link to published article: https://authors.elsevier.com/c/1c5X-4s9Hv-a5M (open access until january 7th, 2021)
